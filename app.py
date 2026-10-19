@@ -228,6 +228,7 @@ if save_clicked:
         time.sleep(2.0)
         st.session_state.do_clear = True
         st.rerun()
+
 st.divider()
 st.subheader("Stock List")
 with get_db() as con:
