@@ -246,8 +246,8 @@ with get_db() as con:
         with c2:
             if st.button("🗑️ Delete", key=f"del_{stock_id}"):
                 with get_db() as con2:
-    con2.execute("DELETE FROM stock WHERE id=?", (stock_id,))
-    con2.commit()
+                    con2.execute("DELETE FROM stock WHERE id=?", (stock_id,))
+                    con2.commit()
 st.rerun()
 except sqlite3.OperationalError:
     st.warning("⚠️ Database needs refresh - click 'Delete' below or add new stock")
