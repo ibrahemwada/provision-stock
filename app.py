@@ -1,4 +1,28 @@
 import streamlit as st
+import streamlit as st
+
+# --- PASSWORD PROTECTION ---
+def check_password():
+    def password_entered():
+        if st.session_state["password"] == "Imuazzam080":
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.text_input("Enter Password to Access Shop", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        st.text_input("Enter Password to Access Shop", type="password", on_change=password_entered, key="password")
+        st.error("😕 Wrong password")
+        return False
+    else:
+        return True
+
+if not check_password():
+    st.stop()
+# --- END PASSWORD ---
 import sqlite3
 from datetime import datetime
 import streamlit.components.v1 as components
