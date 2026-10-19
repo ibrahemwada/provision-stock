@@ -61,20 +61,54 @@ product_name = st.text_input("Product Name *", placeholder="e.g. Indomie (Carton
 st.markdown("### Barcode (optional) - Scan or type")
 barcode_input = st.text_input("Barcode", value=st.session_state.barcode, placeholder="0705652150209", label_visibility="collapsed")
 
-if st.checkbox("📷 Open Live Scanner (phone camera)"):
-    st.info("Allow camera -> point to barcode")
-    components.html("""
+if st.checkbox("📷 Open Live Scanner (better than photo)"):
+    st.info("Point camera to barcode — it will auto-fill your form")
+    components.html(
+        """
         <div id="reader" style="width:100%"></div>
-        <div id="result" style="font-size:22px; font-weight:bold; color:green; margin-top:15px; text-align:center;"></div>
+        <div id="result" style="font-size:18px; font-weight:bold; color:green; margin-top:10px;"></div>
         <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
         <script>
-        function onScanSuccess(decodedText) {
-            document.getElementById('result').innerHTML = "✅ " + decodedText + "<br>COPY this number";
+        function setInParent(placeholderText, value) {
+            try {
+                const parentDoc = window.parent.document;
+                const inputs = parentDoc.querySelectorAll('input[type="text"]');
+                for (let inp of inputs) {
+                    if (inp.placeholder && inp.placeholder.includes(placeholderText)) {
+                        inp.focus();
+                        inp.value = value;
+                        inp.dispatchEvent(new Event('input', {bubbles: true}));
+                        inp.dispatchEvent(new Event('change', {bubbles: true}));
+                        break;
+                    }
+                }
+            } catch(e) {}
         }
-        let scanner = new Html5QrcodeScanner("reader", { fps: 15, qrbox: {width: 300, height: 120} }, false);
-        scanner.render(onScanSuccess);
+
+        function onScanSuccess(decodedText, decodedResult) {
+            document.getElementById('result').innerHTML = "✅ Scanned: " + decodedText + " - Auto-filled!";
+            setInParent("0705652150209", decodedText);
+            
+            // Try to fetch product name from internet automatically
+            fetch("https://world.openfoodfacts.org/api/v0/product/" + decodedText + ".json")
+            .then(res => res.json())
+            .then(data => {
+                if(data.status == 1) {
+                    let name = data.product.product_name || "";
+                    let qty = data.product.quantity || "";
+                    if(name) setInParent("e.g. Indomie", name);
+                    if(qty) setInParent("Size / variant", qty);
+                }
+            });
+        }
+        let html5QrcodeScanner = new Html5QrcodeScanner(
+            "reader", { fps: 10, qrbox: {width: 300, height: 120} }, false);
+        html5QrcodeScanner.render(onScanSuccess);
         </script>
-        """, height=550)
+        """,
+        height=500,
+    )
+    st.caption("✅ Now auto-fills — no more COPY!")
 
 barcode = barcode_input
 col1, col2 = st.columns(2)
