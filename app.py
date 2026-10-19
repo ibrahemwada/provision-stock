@@ -232,7 +232,7 @@ if save_clicked:
 st.divider()
 st.subheader("Stock List")
 with get_db() as con:
-    rows = con.execute("SELECT id, product_name, stock_unit, quantity, buying_price, selling_price, pieces_per_unit, piece_buy_price, piece_sell_price FROM stock ORDER BY id DESC LIMIT 20").fetchall()
+    rows = con.execute("SELECT id, product_name, stock_unit, quantity, buying_price, selling_price FROM stock ORDER BY id DESC LIMIT 20").fetchall()
     for r in rows:
         stock_id = r[0]
         product = r[1]
@@ -240,13 +240,19 @@ with get_db() as con:
         qty = r[3]
         buy = r[4]
         sell = r[5]
-        
         c1, c2 = st.columns([4, 1])
         with c1:
             st.write(f"**{product}** | {qty} {unit} | Buy ₦{buy} Sell ₦{sell}")
         with c2:
             if st.button("🗑️ Delete", key=f"del_{stock_id}"):
                 with get_db() as con2:
-                    con2.execute("DELETE FROM stock WHERE id=?", (stock_id,))
-                    con2.commit()
-                st.rerun()
+    con2.execute("DELETE FROM stock WHERE id=?", (stock_id,))
+    con2.commit()
+st.rerun()
+except sqlite3.OperationalError:
+    st.warning("⚠️ Database needs refresh - click 'Delete' below or add new stock")
+    with get_db() as con:
+        con.execute("DROP TABLE IF EXISTS stock")
+        con.commit()
+    init_db()
+    st.rerun()
