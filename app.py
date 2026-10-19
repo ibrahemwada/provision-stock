@@ -228,25 +228,24 @@ if save_clicked:
         time.sleep(2.0)
         st.session_state.do_clear = True
         st.rerun()
-
 st.divider()
 st.subheader("Stock List")
 with get_db() as con:
     rows = con.execute("SELECT id, product_name, stock_unit, quantity, buying_price, selling_price, pieces_per_unit, piece_buy_price, piece_sell_price FROM stock ORDER BY id DESC LIMIT 20").fetchall()
-for r in rows:
-    stock_id = r[0]
-    product = r[1]
-    unit = r[2]
-    qty = r[3]
-    buy = r[4]
-    sell = r[5]
-    
-    c1, c2 = st.columns([4, 1])
-    with c1:
-        st.write(f"**{product}** | {qty} {unit} | Buy ₦{buy} Sell ₦{sell}")
-    with c2:
-        if st.button("🗑️ Delete", key=f"del_{stock_id}"):
-            with get_db() as con:
-                con.execute("DELETE FROM stock WHERE id=?", (stock_id,))
-                con.commit()
-            st.rerun()
+    for r in rows:
+        stock_id = r[0]
+        product = r[1]
+        unit = r[2]
+        qty = r[3]
+        buy = r[4]
+        sell = r[5]
+        
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            st.write(f"**{product}** | {qty} {unit} | Buy ₦{buy} Sell ₦{sell}")
+        with c2:
+            if st.button("🗑️ Delete", key=f"del_{stock_id}"):
+                with get_db() as con2:
+                    con2.execute("DELETE FROM stock WHERE id=?", (stock_id,))
+                    con2.commit()
+                st.rerun()
