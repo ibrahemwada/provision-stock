@@ -250,3 +250,4 @@ with get_db() as con:
                     con2.execute("DELETE FROM stock WHERE id=?", (stock_id,))
                     con2.commit()
                 st.rerun()
+       
