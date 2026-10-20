@@ -20,18 +20,25 @@ st.markdown("## Add Stock - Buying and Selling Price")
 # 1. Barcode FIRST
 barcode = st.text_input("Barcode (optional)", placeholder="Scan or type", key="barcode_widget")
 
-# 2. Check DB before product name - safe way
+# 2. Check DB and FORCE auto-fill BEFORE product name box
 if barcode.strip():
     with get_db() as con:
         row = con.execute("SELECT product_name FROM stock WHERE barcode=? LIMIT 1", (barcode.strip(),)).fetchone()
         if row:
-            # Only set if empty, and before product_name widget is created = SAFE
-            if "product_name" not in st.session_state or not st.session_state["product_name"]:
-                st.session_state["product_name"] = row[0]
-                st.info(f"Found in sme.db: {row[0]}")
+            found_name = row[0]
+            if st.session_state.get("product_name", "") != found_name:
+                st.session_state["product_name"] = found_name
+                st.rerun()
 
-# 3. Product Name AFTER barcode check
+# 3. Product name AFTER
 product_name = st.text_input("Product Name *", placeholder="e.g. Vaseline 225ml", key="product_name")
+
+# Show message after box
+if barcode.strip():
+    with get_db() as con:
+        row = con.execute("SELECT product_name FROM stock WHERE barcode=? LIMIT 1", (barcode.strip(),)).fetchone()
+        if row:
+            st.success(f"Found: {row[0]} - auto-filled")
 
 if st.checkbox("Open Live Scanner"):
     components.html("""
