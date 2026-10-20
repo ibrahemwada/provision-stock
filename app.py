@@ -1,329 +1,263 @@
 import streamlit as st
 import sqlite3
-import json
-import urllib.request
-import streamlit.components.v1 as components
+import pandas as pd
+import requests
 from datetime import datetime
 
-st.set_page_config(page_title="Add Stock", layout="wide")
+st.set_page_config(page_title="3-Tier Scanner Test", layout="centered")
 
-# --- DATABASE SETUP ---
-def get_db():
-    return sqlite3.connect("sme.db")
+# ==============================================================================
+# 0. ISOLATED TEST DATABASE (Does not touch your real SQLite DB)
+# ==============================================================================
+DB_FILE = "test_scanner.db"
 
-def init_db():
-    with get_db() as con:
+def get_test_db():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_test_db():
+    with get_test_db() as con:
         con.execute("""
-            CREATE TABLE IF NOT EXISTS stock (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                product_name TEXT, 
-                business_category TEXT, 
-                brand TEXT, 
-                stock_unit TEXT, 
-                quantity REAL, 
-                buying_price REAL, 
-                selling_price REAL, 
-                pieces_per_unit INTEGER, 
-                piece_buy_price REAL, 
-                piece_sell_price REAL, 
-                low_stock_alert REAL, 
-                size_variant TEXT, 
-                barcode TEXT, 
-                date_added TEXT
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                barcode TEXT UNIQUE,
+                category TEXT,
+                brand TEXT,
+                variant TEXT,
+                unit TEXT,
+                buy REAL,
+                sell REAL,
+                stock REAL,
+                created TEXT
             )
         """)
-        con.commit()
+        # Insert a sample local product for testing Tier 1
+        con.execute("""
+            INSERT OR IGNORE INTO products (id, name, barcode, category, brand, variant, unit, buy, sell, stock, created)
+            VALUES (1, 'Indomie Instant Noodles (Local Demo)', '11111', 'Provisions', 'Dufil', '70g', 'pack', 250, 300, 48, ?)
+        """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
 
-init_db()
+init_test_db()
 
-CATEGORIES = ["Provisions / Groceries", "Textiles / Fabrics", "Cosmetics", "Electronics", "Other"]
-UNITS = ["piece", "pack", "carton", "bag", "crate", "bottle", "sachet"]
+# ==============================================================================
+# 1. TIER 2: GOOGLE SHEETS / COMMUNITY DATABASE
+# ==============================================================================
+# When you have your own published CSV link, put it here:
+COMMUNITY_SHEET_CSV_URL = "" 
 
-# --- INITIALIZE SESSION STATE DEFAULTS ---
-defaults = {
-    "barcode_input": "",
-    "product_name": "",
-    "business_category": CATEGORIES[0],
-    "brand": "",
-    "stock_unit": UNITS[0],
-    "buying_price": 0.0,
-    "selling_price": 0.0,
-    "quantity": 10.0,
-    "low_stock": 5.0,
-    "size_variant": "",
-}
+def lookup_google_sheet(barcode: str):
+    """Tier 2: Checks Google Sheets (Simulated fallback included for testing)"""
+    # If user provided a real published CSV URL:
+    if COMMUNITY_SHEET_CSV_URL.strip():
+        try:
+            df = pd.read_csv(COMMUNITY_SHEET_CSV_URL, dtype=str)
+            if "barcode" in df.columns:
+                match = df[df["barcode"].str.strip() == str(barcode).strip()]
+                if not match.empty:
+                    row = match.iloc[0]
+                    return {
+                        "name": row.get("name", ""),
+                        "brand": row.get("brand", ""),
+                        "category": row.get("category", "Provisions"),
+                        "variant": row.get("variant", ""),
+                        "unit": row.get("unit", "piece"),
+                        "source": "Google Sheets (Live Cloud)"
+                    }
+        except Exception as e:
+            st.error(f"Google Sheet error: {e}")
 
-for key, val in defaults.items():
-    if key not in st.session_state:
-        st.session_state[key] = val
-
-
-# --- AUTOFILL LOGIC ---
-def autofill_product(code):
-    code = (code or "").strip()
-    if not code:
-        return
-
-    # 1. Search existing local database
-    with get_db() as con:
-        cur = con.cursor()
-        cur.execute("""
-            SELECT product_name, business_category, brand, stock_unit, 
-                   buying_price, selling_price, low_stock_alert, size_variant 
-            FROM stock WHERE barcode = ? ORDER BY id DESC LIMIT 1
-        """, (code,))
-        row = cur.fetchone()
-
-        if row:
-            st.session_state.product_name = row[0] or ""
-            if row[1] in CATEGORIES:
-                st.session_state.business_category = row[1]
-            st.session_state.brand = row[2] or ""
-            if row[3] in UNITS:
-                st.session_state.stock_unit = row[3]
-            st.session_state.buying_price = float(row[4] or 0.0)
-            st.session_state.selling_price = float(row[5] or 0.0)
-            st.session_state.low_stock = float(row[6] or 5.0)
-            st.session_state.size_variant = row[7] or ""
-            st.toast(f"📦 Found in stock history: {row[0]}")
-            return
-
-    # 2. Search Open Food Facts online (for packaged consumer products)
-    try:
-        url = f"https://world.openfoodfacts.org/api/v0/product/{code}.json"
-        req = urllib.request.Request(url, headers={"User-Agent": "StreamlitStockApp/1.0"})
-        with urllib.request.urlopen(req, timeout=2.0) as resp:
-            data = json.loads(resp.read().decode())
-            if data.get("status") == 1:
-                p = data.get("product", {})
-                name = p.get("product_name") or p.get("product_name_en", "")
-                brand_online = p.get("brands", "")
-                if name:
-                    st.session_state.product_name = name
-                if brand_online:
-                    st.session_state.brand = brand_online
-                st.toast(f"🌐 Product details fetched online: {name}")
-                return
-    except Exception:
-        pass
-
-    st.toast("ℹ️ New barcode. Fill in product details.")
-
-
-def on_barcode_change():
-    autofill_product(st.session_state.barcode_input)
-
-
-# --- UI ---
-st.markdown("## 🟡 Add Stock - Buying & Selling Price")
-
-col_bar1, col_bar2 = st.columns([4, 1])
-with col_bar1:
-    barcode = st.text_input(
-        "Barcode (optional)", 
-        key="barcode_input", 
-        placeholder="Scan or type barcode here",
-        on_change=on_barcode_change
-    )
-with col_bar2:
-    st.write("")
-    st.write("")
-    if st.button("🔍 Autofill", use_container_width=True):
-        autofill_product(st.session_state.barcode_input)
-        st.rerun()
-
-# Scanner toggle with persistent key
-scanner_open = st.checkbox("📷 Open Live Scanner", key="scanner_active")
-
-if scanner_open:
-    components.html("""
-    <div id="reader" style="width:100%; max-width: 480px; margin: auto;"></div>
-    <div id="scanner-status" style="color: green; font-weight: bold; text-align: center; margin-top: 8px;"></div>
-    
-    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-    <script>
-    let lastCode = "";
-    let isProcessing = false;
-
-    function onScanSuccess(decodedText) {
-        if (isProcessing || decodedText === lastCode) return;
-        lastCode = decodedText;
-        isProcessing = true;
-        setTimeout(() => { isProcessing = false; }, 2500); // 2.5s scan throttle
-
-        document.getElementById('scanner-status').innerText = "✓ Scanned: " + decodedText;
-
-        // Audio Beep Feedback
-        try {
-            const ctx = new (window.AudioContext || window.webkitAudioContext)();
-            const osc = ctx.createOscillator();
-            osc.frequency.setValueAtTime(850, ctx.currentTime);
-            osc.connect(ctx.destination);
-            osc.start();
-            osc.stop(ctx.currentTime + 0.15);
-        } catch(e) {}
-
-        // Inject directly into Streamlit React input without page reload
-        try {
-            const doc = window.parent.document;
-            const inputs = doc.querySelectorAll('input[type="text"]');
-            let targetInput = null;
-
-            for (let inp of inputs) {
-                const p = (inp.placeholder || "").toLowerCase();
-                const a = (inp.getAttribute("aria-label") || "").toLowerCase();
-                if (p.includes("barcode") || p.includes("scan") || a.includes("barcode")) {
-                    targetInput = inp;
-                    break;
-                }
-            }
-
-            if (targetInput) {
-                // Call native setter to bypass React's synthetic tracking
-                const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                nativeSetter.call(targetInput, decodedText);
-
-                // Dispatch input and change events
-                targetInput.dispatchEvent(new Event('input', { bubbles: true }));
-                targetInput.dispatchEvent(new Event('change', { bubbles: true }));
-
-                // Dispatch Enter key to trigger Streamlit's WebSocket sync and on_change
-                targetInput.dispatchEvent(new KeyboardEvent('keydown', {
-                    bubbles: true,
-                    cancelable: true,
-                    key: 'Enter',
-                    code: 'Enter',
-                    keyCode: 13
-                }));
-
-                targetInput.blur();
-            }
-        } catch(err) {
-            console.error("DOM access failed:", err);
-            // Fallback for sandboxed cross-origin environments
-            navigator.clipboard.writeText(decodedText);
-            document.getElementById('scanner-status').innerText = "✓ Scanned: " + decodedText + " (Copied to clipboard)";
+    # SIMULATED COMMUNITY DATABASE FOR TESTING (Barcode: '22222')
+    simulated_community_db = {
+        "22222": {
+            "name": "Peak Evaporated Milk (Community Saved)",
+            "brand": "Peak",
+            "category": "Provisions",
+            "variant": "160g tin",
+            "unit": "tin",
+            "source": "Google Sheets (Community)"
         }
     }
+    return simulated_community_db.get(barcode)
 
-    let scanner = new Html5QrcodeScanner("reader", { 
-        fps: 10, 
-        qrbox: { width: 280, height: 120 },
-        rememberLastUsedCamera: true
-    }, false);
-    scanner.render(onScanSuccess);
-    </script>
-    """, height=380)
+# ==============================================================================
+# 2. TIER 3: ONLINE SEARCH (Open Food Facts Global Retail API)
+# ==============================================================================
+def lookup_online(barcode: str):
+    """Tier 3: Queries millions of international packaged retail barcodes"""
+    try:
+        url = f"https://world.openfoodfacts.org/api/v0/product/{barcode}.json"
+        res = requests.get(url, headers={"User-Agent": "InventoryScannerTest/1.0"}, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get("status") == 1:
+                p = data.get("product", {})
+                name = p.get("product_name") or p.get("generic_name") or ""
+                brand = p.get("brands") or ""
+                variant = p.get("quantity") or ""
+                if name:
+                    return {
+                        "name": name,
+                        "brand": brand,
+                        "category": "Provisions",
+                        "variant": variant,
+                        "unit": "piece",
+                        "source": "Online Retail Database (Open Food Facts)"
+                    }
+    except Exception as e:
+        st.warning(f"Online search timed out: {e}")
+    return None
 
-# Alternative fallback: Snap photo using native Streamlit camera input
-with st.expander("📸 Can't open webcam scanner? Click here to snap a photo"):
-    cam_file = st.camera_input("Take photo of barcode")
+# ==============================================================================
+# CAMERA DECODER HELPER (Optional PyZbar)
+# ==============================================================================
+def decode_barcode_image(img_file):
+    try:
+        from pyzbar.pyzbar import decode
+        from PIL import Image
+        img = Image.open(img_file)
+        decoded = decode(img)
+        if decoded:
+            return decoded[0].data.decode("utf-8")
+    except ImportError:
+        st.warning("⚠️ Install `pyzbar` and `pillow` for camera decoding (`pip install pyzbar pillow`). Typing barcodes works immediately!")
+    except Exception:
+        pass
+    return None
+
+# ==============================================================================
+# UI: SCANNER & VERIFICATION DASHBOARD
+# ==============================================================================
+st.title("🧪 3-Tier Barcode Scanner (Test Lab)")
+st.info("Test how the 3 lookup tiers work before applying this to your main app.")
+
+# Instructions & quick test buttons
+with st.expander("💡 Click to view Barcode Cheat-Sheet for Testing"):
+    st.markdown("""
+    Use these test barcodes in the input box below:
+    * **`11111`** ➡️ Hits **Tier 1 (Local SQLite)** (Already in test DB)
+    * **`22222`** ➡️ Hits **Tier 2 (Google Sheets / Community)**
+    * **`3017620422003`** ➡️ Hits **Tier 3 (Online Search)** (Nutella Ferrero)
+    * **`5449000000996`** ➡️ Hits **Tier 3 (Online Search)** (Coca-Cola bottle)
+    * **`99999`** ➡️ Hits **Tier 4 (Not Found)** (Enter product manually)
+    """)
+
+# Scanner Inputs
+scanned_code = None
+tab_input, tab_cam = st.tabs(["⌨️ Scanner Gun / Type Barcode", "📸 Camera Scanner"])
+
+with tab_input:
+    col_input, col_btn = st.columns([3, 1])
+    with col_input:
+        manual_code = st.text_input("Enter or scan barcode with scanner gun:", key="barcode_test_box")
+    with col_btn:
+        st.write("") # spacing
+        search_clicked = st.button("🔎 Search", use_container_width=True)
+
+    if manual_code and (search_clicked or manual_code != st.session_state.get("prev_manual")):
+        scanned_code = manual_code.strip()
+        st.session_state["prev_manual"] = scanned_code
+
+with tab_cam:
+    cam_file = st.camera_input("Hold barcode up to camera")
     if cam_file:
-        try:
-            import cv2
-            import numpy as np
-            bytes_data = cam_file.getvalue()
-            cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+        cam_code = decode_barcode_image(cam_file)
+        if cam_code:
+            scanned_code = cam_code
+            st.success(f"Scanned from camera: `{cam_code}`")
+        else:
+            st.warning("No barcode detected in camera frame.")
 
-            found_code = None
-            if hasattr(cv2, "barcode"):
-                det = cv2.barcode.BarcodeDetector()
-                res = det.detectAndDecode(cv2_img)
-                if isinstance(res, tuple) and res[0]:
-                    found_code = res[0]
+# ==============================================================================
+# LOOKUP PIPELINE
+# ==============================================================================
+if scanned_code:
+    st.subheader(f"Results for Barcode: `{scanned_code}`")
+    
+    with st.spinner("Checking Tier 1 (SQLite) ➡️ Tier 2 (Google Sheets) ➡️ Tier 3 (Online)..."):
+        # 1. Check Local SQLite
+        with get_test_db() as con:
+            cur = con.execute("SELECT * FROM products WHERE barcode = ? LIMIT 1", (scanned_code,))
+            local_row = cur.fetchone()
 
-            if not found_code:
-                qr_det = cv2.QRCodeDetector()
-                res_qr, _, _ = qr_det.detectAndDecode(cv2_img)
-                if res_qr:
-                    found_code = res_qr
+        if local_row:
+            # TIER 1 HIT
+            st.success("✅ **Tier 1 Match: Found in Local SQLite Database!**")
+            p = dict(local_row)
+            
+            st.markdown(f"""
+            ### {p['name']}
+            - **Current Stock:** `{p['stock']} {p['unit']}`
+            - **Buying Price:** ₦{p['buy']:,.2f}
+            - **Selling Price:** ₦{p['sell']:,.2f}
+            """)
+            
+            with st.form("test_stock_in"):
+                st.write("#### Add Stock Directly")
+                add_qty = st.number_input("Quantity Received", min_value=1.0, value=5.0, step=1.0)
+                update_cost = st.number_input("Cost per unit (₦)", min_value=0.0, value=float(p['buy']))
+                
+                if st.form_submit_button("📥 Update Stock in SQLite", type="primary"):
+                    with get_test_db() as con:
+                        con.execute("UPDATE products SET stock = stock + ?, buy = ? WHERE id = ?", (add_qty, update_cost, p['id']))
+                    st.success(f"Updated! New stock is {p['stock'] + add_qty}")
+                    st.rerun()
 
-            if found_code:
-                st.session_state.barcode_input = found_code
-                autofill_product(found_code)
-                st.rerun()
+        else:
+            # 2. Check Tier 2: Google Sheets
+            sheet_data = lookup_google_sheet(scanned_code)
+            
+            if sheet_data:
+                st.info(f"🌐 **Tier 2 Match: Found in {sheet_data['source']}!** Form autofilled below.")
+                prefill = sheet_data
             else:
-                st.warning("Barcode not detected in photo. Try holding it closer or steady.")
-        except Exception as e:
-            st.error(f"Image processing error: {e}")
+                # 3. Check Tier 3: Online
+                online_data = lookup_online(scanned_code)
+                if online_data:
+                    st.info(f"🌍 **Tier 3 Match: Found in {online_data['source']}!** Form autofilled below.")
+                    prefill = online_data
+                else:
+                    st.warning("⚠️ **Not Found in any database.** Please enter details manually.")
+                    prefill = {"name": "", "brand": "", "variant": "", "category": "Provisions", "unit": "piece"}
 
-# Form Inputs
-product_name = st.text_input("Product Name *", key="product_name", placeholder="e.g. Vaseline 225ml")
+            # Registration Form
+            st.write("---")
+            st.write("### 📝 Register New Product into Local SQLite")
+            with st.form("test_register_product"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    new_name = st.text_input("Product Name", value=prefill.get("name", ""))
+                    new_barcode = st.text_input("Barcode", value=scanned_code, disabled=True)
+                    new_category = st.selectbox("Category", ["Provisions", "Pharmacy", "Textiles", "Electronics", "Others"])
+                    new_brand = st.text_input("Brand", value=prefill.get("brand", ""))
+                    new_unit = st.selectbox("Stock Unit", ["piece", "pack", "carton", "tin", "bottle", "sachet"])
+                with c2:
+                    new_variant = st.text_input("Size / Variant", value=prefill.get("variant", ""))
+                    new_buy = st.number_input("Buying Price (₦)", min_value=0.0, value=500.0, step=50.0)
+                    new_sell = st.number_input("Selling Price (₦)", min_value=0.0, value=700.0, step=50.0)
+                    new_stock = st.number_input("Initial Quantity", min_value=1.0, value=12.0, step=1.0)
 
-col1, col2 = st.columns(2)
-with col1:
-    business_category = st.selectbox(
-        "Business category", 
-        CATEGORIES, 
-        index=CATEGORIES.index(st.session_state.business_category) if st.session_state.business_category in CATEGORIES else 0,
-        key="business_category"
-    )
-    brand = st.text_input("Brand (optional)", key="brand")
-    stock_unit = st.selectbox(
-        "Stock unit", 
-        UNITS, 
-        index=UNITS.index(st.session_state.stock_unit) if st.session_state.stock_unit in UNITS else 0,
-        key="stock_unit"
-    )
-    buying_price = st.number_input("Buying price per unit ₦ *", min_value=0.0, step=100.0, key="buying_price")
+                if st.form_submit_button("💾 Save Product to SQLite", type="primary"):
+                    if not new_name.strip():
+                        st.error("Product name is required.")
+                    else:
+                        with get_test_db() as con:
+                            con.execute("""
+                                INSERT INTO products (name, barcode, category, brand, variant, unit, buy, sell, stock, created)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (new_name.strip(), scanned_code, new_category, new_brand.strip(), 
+                                  new_variant.strip(), new_unit, new_buy, new_sell, new_stock, 
+                                  datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                        st.success(f"🎉 Saved '{new_name}' to Local SQLite! If you scan barcode `{scanned_code}` again, it will now hit **Tier 1 (Local)**.")
+                        st.rerun()
 
-with col2:
-    quantity = st.number_input("Quantity *", min_value=0.0, step=1.0, key="quantity")
-    selling_price = st.number_input("Selling price per unit ₦ *", min_value=0.0, step=100.0, key="selling_price")
-    low_stock = st.number_input("Low-stock alert at", min_value=0.0, step=1.0, key="low_stock")
-    size_variant = st.text_input("Size / variant (optional)", placeholder="e.g. 225ml, 50g", key="size_variant")
-
-pieces_per_unit = 1
-piece_buy_price = buying_price
-piece_sell_price = selling_price
-
-if stock_unit == "bag":
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        pieces_per_unit = st.number_input("Mudu inside 1 bag", min_value=1, value=20, step=1)
-    with c2:
-        piece_sell_price = st.number_input("Mudu Selling Price ₦", min_value=0.0, value=0.0, step=10.0)
-    with c3:
-        if buying_price > 0:
-            piece_buy_price = buying_price / pieces_per_unit
-            st.metric("Mudu Cost", f"₦{piece_buy_price:.2f}")
-
-if st.button("💾 Save to Stock", use_container_width=True):
-    if not product_name or buying_price == 0 or selling_price == 0:
-        st.error("Fill Product Name, Buying and Selling Price!")
-    elif selling_price <= buying_price:
-        st.error(f"Selling price (₦{selling_price}) must be > Buying price (₦{buying_price})")
-    else:
-        with get_db() as con:
-            con.execute("""
-                INSERT INTO stock (
-                    product_name, business_category, brand, stock_unit, quantity, 
-                    buying_price, selling_price, pieces_per_unit, piece_buy_price, 
-                    piece_sell_price, low_stock_alert, size_variant, barcode, date_added
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                product_name, business_category, brand, stock_unit, quantity,
-                buying_price, selling_price, pieces_per_unit, piece_buy_price,
-                piece_sell_price, low_stock, size_variant, st.session_state.barcode_input,
-                datetime.now().strftime("%Y-%m-%d %H:%M")
-            ))
-            con.commit()
-        st.success(f"Saved {product_name}!")
-        st.balloons()
-        st.rerun()
-
+# ==============================================================================
+# VIEW CURRENT TEST DATABASE
+# ==============================================================================
 st.divider()
-st.subheader("Stock List")
-with get_db() as con:
-    rows = con.execute("SELECT id, product_name, stock_unit, quantity, buying_price, selling_price FROM stock ORDER BY id DESC LIMIT 20").fetchall()
-    for r in rows:
-        sid, prod, unit, qty, buy, sell = r
-        c1, c2 = st.columns([4, 1])
-        with c1:
-            st.write(f"**{prod}** | {qty} {unit} | Buy ₦{buy} Sell ₦{sell}")
-        with c2:
-            if st.button("🗑️ Delete", key=f"del_{sid}"):
-                with get_db() as con2:
-                    con2.execute("DELETE FROM stock WHERE id=?", (sid,))
-                    con2.commit()
-                st.rerun()
+st.subheader("📦 Current Products in Test SQLite Database")
+with get_test_db() as con:
+    current_df = pd.read_sql_query("SELECT id, name, barcode, brand, variant, stock, buy, sell FROM products", con)
+
+st.dataframe(current_df, use_container_width=True, hide_index=True)
