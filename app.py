@@ -4,8 +4,12 @@ from datetime import datetime
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Add Stock", layout="wide")
+
+# --- FIX 1: Keep barcode in session properly ---
 if "barcode" not in st.session_state:
     st.session_state.barcode = ""
+if "product_name" not in st.session_state:
+    st.session_state.product_name = ""
 
 def get_db():
     return sqlite3.connect("sme.db")
@@ -19,8 +23,41 @@ init_db()
 
 st.markdown("## 🟡 Add Stock - Buying & Selling Price")
 
-product_name = st.text_input("Product Name *", placeholder="e.g. Vaseline 225ml")
-barcode = st.text_input("Barcode (optional)", placeholder="Scan or type", value=st.session_state.barcode)
+# --- FIX 2: Auto-fill if barcode exists ---
+def check_barcode_exists(bc):
+    if not bc:
+        return None
+    try:
+        with get_db() as con:
+            row = con.execute("SELECT product_name, business_category, brand, stock_unit, buying_price, selling_price, size_variant FROM stock WHERE barcode=?", (bc.strip(),)).fetchone()
+            return row
+    except:
+        return None
+
+# Use key + on_change so JS scanner will persist
+def on_barcode_change():
+    st.session_state.barcode = st.session_state.barcode_widget
+
+product_name = st.text_input("Product Name *", placeholder="e.g. Vaseline 225ml", key="product_name", value=st.session_state.product_name)
+
+# ONE barcode box only, with key
+barcode = st.text_input("Barcode (optional)", placeholder="Scan or type", key="barcode_widget", value=st.session_state.barcode, on_change=on_barcode_change)
+
+# Sync manual typing immediately
+if barcode != st.session_state.barcode:
+    st.session_state.barcode = barcode
+
+# If barcode typed/scanned, auto-fill name if already in sme.db
+if st.session_state.barcode:
+    existing = check_barcode_exists(st.session_state.barcode)
+    if existing:
+        prod, cat, br, unit, buy, sell, size = existing
+        if not st.session_state.product_name:
+            st.session_state.product_name = prod
+        st.info(f"✅ Found in LOCAL sme.db: {prod} — auto-filling")
+        # Optional: auto set product_name input via rerun
+        if product_name != prod:
+            product_name = prod
 
 if st.checkbox("📷 Open Live Scanner"):
     components.html("""
@@ -33,8 +70,19 @@ if st.checkbox("📷 Open Live Scanner"):
       try{
         const doc=window.parent.document;
         const inputs=doc.querySelectorAll('input[type="text"]');
-        for(let inp of inputs){if(inp.placeholder.includes("Scan or type")){inp.focus();inp.value=decodedText;inp.dispatchEvent(new Event('input',{bubbles:true}));break;}}
-      }catch(e){}
+        for(let inp of inputs){
+          // This now matches your keyed input
+          if(inp.placeholder.includes("Scan or type") || inp.id.includes("barcode")){
+            inp.focus();
+            // For Streamlit we need to set React value
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+            nativeInputValueSetter.call(inp, decodedText);
+            inp.dispatchEvent(new Event('input', {bubbles:true}));
+            inp.dispatchEvent(new Event('change', {bubbles:true}));
+            break;
+          }
+        }
+      }catch(e){console.log(e)}
     }
     let scanner=new Html5QrcodeScanner("reader",{fps:10,qrbox:{width:300,height:120}},false);
     scanner.render(onScanSuccess);
@@ -69,27 +117,35 @@ if stock_unit == "bag":
             st.metric("Mudu Cost", f"₦{piece_buy_price:.2f}")
 
 if st.button("💾 Save to Stock", use_container_width=True):
-    if not product_name or buying_price==0 or selling_price==0:
+    final_name = st.session_state.product_name or product_name
+    final_barcode = st.session_state.barcode or barcode
+    if not final_name or buying_price==0 or selling_price==0:
         st.error("Fill Product Name, Buying and Selling Price!")
     elif selling_price <= buying_price:
         st.error(f"Selling ₦{selling_price} must be > Buying ₦{buying_price}")
     else:
         with get_db() as con:
-            con.execute("INSERT INTO stock (product_name, business_category, brand, stock_unit, quantity, buying_price, selling_price, pieces_per_unit, piece_buy_price, piece_sell_price, low_stock_alert, size_variant, barcode, date_added) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (product_name, business_category, brand, stock_unit, quantity, buying_price, selling_price, pieces_per_unit, piece_buy_price, piece_sell_price, low_stock, size_variant, barcode, datetime.now().strftime("%Y-%m-%d %H:%M")))
+            con.execute("INSERT INTO stock (product_name, business_category, brand, stock_unit, quantity, buying_price, selling_price, pieces_per_unit, piece_buy_price, piece_sell_price, low_stock_alert, size_variant, barcode, date_added) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (final_name, business_category, brand, stock_unit, quantity, buying_price, selling_price, pieces_per_unit, piece_buy_price, piece_sell_price, low_stock, size_variant, final_barcode, datetime.now().strftime("%Y-%m-%d %H:%M")))
             con.commit()
-        st.success(f"Saved {product_name}")
+        # --- For BOTH sme.db + Google Sheet (when you add GSHEET_URL later) ---
+        # try: save_to_gsheet(final_barcode, final_name) 
+        # except: pass
+        st.success(f"Saved {final_name} [{final_barcode}]")
         st.balloons()
+        # Clear only product, keep barcode? You choose - now we clear both
+        st.session_state.barcode = ""
+        st.session_state.product_name = ""
         st.rerun()
 
 st.divider()
 st.subheader("Stock List")
 with get_db() as con:
-    rows = con.execute("SELECT id, product_name, stock_unit, quantity, buying_price, selling_price FROM stock ORDER BY id DESC LIMIT 20").fetchall()
+    rows = con.execute("SELECT id, product_name, stock_unit, quantity, buying_price, selling_price, barcode FROM stock ORDER BY id DESC LIMIT 20").fetchall()
     for r in rows:
-        sid, prod, unit, qty, buy, sell = r
+        sid, prod, unit, qty, buy, sell, bc = r
         c1, c2 = st.columns([4,1])
         with c1:
-            st.write(f"**{prod}** | {qty} {unit} | Buy ₦{buy} Sell ₦{sell}")
+            st.write(f"**{prod}** | {qty} {unit} | Buy ₦{buy} Sell ₦{sell} | BC: {bc}")
         with c2:
             if st.button("🗑️ Delete", key=f"del_{sid}"):
                 with get_db() as con2:
