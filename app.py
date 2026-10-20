@@ -38,7 +38,7 @@ def check_barcode_exists(bc):
 def on_barcode_change():
     st.session_state.barcode = st.session_state.barcode_widget
 
-product_name = st.text_input("Product Name *", placeholder="e.g. Vaseline 225ml", key="product_name", value=st.session_state.product_name)
+product_name = st.text_input("Product Name *", placeholder="e.g. Vaseline 225ml", key="product_name")
 
 # ONE barcode box only, with key
 barcode = st.text_input("Barcode (optional)", placeholder="Scan or type", key="barcode_widget", value=st.session_state.barcode, on_change=on_barcode_change)
@@ -135,6 +135,7 @@ if st.button("💾 Save to Stock", use_container_width=True):
         # Clear only product, keep barcode? You choose - now we clear both
         st.session_state.barcode = ""
         st.session_state.product_name = ""
+        st.session_state["barcode"] = ""
         st.rerun()
 
 st.divider()
