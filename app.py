@@ -65,7 +65,6 @@ product_name = st.text_input("Product Name *", placeholder="e.g. Vaseline 225ml"
 
 if st.checkbox("📷 Open Live Scanner"):
 
-if st.checkbox("📷 Open Live Scanner"):
     components.html("""
     <div id="reader" style="width:100%"></div>
     <div id="result" style="color:green;font-weight:bold"></div>
