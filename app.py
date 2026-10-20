@@ -2,8 +2,8 @@ import streamlit as st
 import sqlite3
 import json
 import urllib.request
-from datetime import datetime
 import streamlit.components.v1 as components
+from datetime import datetime
 
 st.set_page_config(page_title="Add Stock", layout="wide")
 
@@ -39,9 +39,9 @@ init_db()
 CATEGORIES = ["Provisions / Groceries", "Textiles / Fabrics", "Cosmetics", "Electronics", "Other"]
 UNITS = ["piece", "pack", "carton", "bag", "crate", "bottle", "sachet"]
 
-# --- INITIALIZE SESSION STATE ---
+# --- INITIALIZE SESSION STATE DEFAULTS ---
 defaults = {
-    "barcode": "",
+    "barcode_input": "",
     "product_name": "",
     "business_category": CATEGORIES[0],
     "brand": "",
@@ -51,7 +51,6 @@ defaults = {
     "quantity": 10.0,
     "low_stock": 5.0,
     "size_variant": "",
-    "scanner_open": False
 }
 
 for key, val in defaults.items():
@@ -59,12 +58,13 @@ for key, val in defaults.items():
         st.session_state[key] = val
 
 
-# --- AUTO-FILL FUNCTION ---
-def autofill_from_barcode(code):
+# --- AUTOFILL LOGIC ---
+def autofill_product(code):
+    code = (code or "").strip()
     if not code:
         return
 
-    # 1. Look in existing local SQLite database
+    # 1. Search existing local database
     with get_db() as con:
         cur = con.cursor()
         cur.execute("""
@@ -85,44 +85,33 @@ def autofill_from_barcode(code):
             st.session_state.selling_price = float(row[5] or 0.0)
             st.session_state.low_stock = float(row[6] or 5.0)
             st.session_state.size_variant = row[7] or ""
-            st.toast(f"✅ Loaded details for '{row[0]}' from stock history!")
+            st.toast(f"📦 Found in stock history: {row[0]}")
             return
 
-    # 2. Optional: Search Open Food Facts online (free, no API key required)
+    # 2. Search Open Food Facts online (for packaged consumer products)
     try:
         url = f"https://world.openfoodfacts.org/api/v0/product/{code}.json"
         req = urllib.request.Request(url, headers={"User-Agent": "StreamlitStockApp/1.0"})
-        with urllib.request.urlopen(req, timeout=2.5) as resp:
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
             data = json.loads(resp.read().decode())
             if data.get("status") == 1:
                 p = data.get("product", {})
                 name = p.get("product_name") or p.get("product_name_en", "")
-                brand = p.get("brands", "")
+                brand_online = p.get("brands", "")
                 if name:
                     st.session_state.product_name = name
-                if brand:
-                    st.session_state.brand = brand
-                st.toast(f"🌐 Product found online: {name}")
+                if brand_online:
+                    st.session_state.brand = brand_online
+                st.toast(f"🌐 Product details fetched online: {name}")
+                return
     except Exception:
         pass
 
+    st.toast("ℹ️ New barcode. Fill in product details.")
 
-# --- DETECT SCANNED BARCODE FROM URL ---
-scanned_code = None
-if hasattr(st, "query_params") and "scanned_barcode" in st.query_params:
-    scanned_code = st.query_params.get("scanned_barcode")
-    del st.query_params["scanned_barcode"]
-elif not hasattr(st, "query_params"):
-    params = st.experimental_get_query_params()
-    if "scanned_barcode" in params:
-        scanned_code = params["scanned_barcode"][0]
-        params.pop("scanned_barcode", None)
-        st.experimental_set_query_params(**params)
 
-if scanned_code:
-    st.session_state.barcode = scanned_code
-    autofill_from_barcode(scanned_code)
-    st.session_state.scanner_open = False  # Auto-close scanner once scanned
+def on_barcode_change():
+    autofill_product(st.session_state.barcode_input)
 
 
 # --- UI ---
@@ -132,47 +121,133 @@ col_bar1, col_bar2 = st.columns([4, 1])
 with col_bar1:
     barcode = st.text_input(
         "Barcode (optional)", 
-        key="barcode", 
-        placeholder="Scan or type barcode"
+        key="barcode_input", 
+        placeholder="Scan or type barcode here",
+        on_change=on_barcode_change
     )
 with col_bar2:
     st.write("")
     st.write("")
-    if st.button("🔍 Find Product", use_container_width=True):
-        if st.session_state.barcode:
-            autofill_from_barcode(st.session_state.barcode)
-            st.rerun()
+    if st.button("🔍 Autofill", use_container_width=True):
+        autofill_product(st.session_state.barcode_input)
+        st.rerun()
 
-scanner_toggle = st.checkbox("📷 Open Live Scanner", value=st.session_state.scanner_open)
+# Scanner toggle with persistent key
+scanner_open = st.checkbox("📷 Open Live Scanner", key="scanner_active")
 
-if scanner_toggle:
+if scanner_open:
     components.html("""
-    <div id="reader" style="width:100%"></div>
-    <div id="result" style="color:green;font-weight:bold;margin-top:8px;"></div>
+    <div id="reader" style="width:100%; max-width: 480px; margin: auto;"></div>
+    <div id="scanner-status" style="color: green; font-weight: bold; text-align: center; margin-top: 8px;"></div>
+    
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
     <script>
-    let scanned = false;
-    function onScanSuccess(decodedText) {
-        if (scanned) return;
-        scanned = true;
-        document.getElementById('result').innerText = "✓ Scanned: " + decodedText + ". Loading...";
-        try { scanner.clear(); } catch(e){}
+    let lastCode = "";
+    let isProcessing = false;
 
-        // Pass scanned value back to Streamlit URL query parameter
+    function onScanSuccess(decodedText) {
+        if (isProcessing || decodedText === lastCode) return;
+        lastCode = decodedText;
+        isProcessing = true;
+        setTimeout(() => { isProcessing = false; }, 2500); // 2.5s scan throttle
+
+        document.getElementById('scanner-status').innerText = "✓ Scanned: " + decodedText;
+
+        // Audio Beep Feedback
         try {
-            const url = new URL(window.parent.location.href);
-            url.searchParams.set("scanned_barcode", decodedText);
-            window.parent.location.href = url.toString();
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            osc.frequency.setValueAtTime(850, ctx.currentTime);
+            osc.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.15);
+        } catch(e) {}
+
+        // Inject directly into Streamlit React input without page reload
+        try {
+            const doc = window.parent.document;
+            const inputs = doc.querySelectorAll('input[type="text"]');
+            let targetInput = null;
+
+            for (let inp of inputs) {
+                const p = (inp.placeholder || "").toLowerCase();
+                const a = (inp.getAttribute("aria-label") || "").toLowerCase();
+                if (p.includes("barcode") || p.includes("scan") || a.includes("barcode")) {
+                    targetInput = inp;
+                    break;
+                }
+            }
+
+            if (targetInput) {
+                // Call native setter to bypass React's synthetic tracking
+                const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                nativeSetter.call(targetInput, decodedText);
+
+                // Dispatch input and change events
+                targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+                targetInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+                // Dispatch Enter key to trigger Streamlit's WebSocket sync and on_change
+                targetInput.dispatchEvent(new KeyboardEvent('keydown', {
+                    bubbles: true,
+                    cancelable: true,
+                    key: 'Enter',
+                    code: 'Enter',
+                    keyCode: 13
+                }));
+
+                targetInput.blur();
+            }
         } catch(err) {
-            window.location.search = "?scanned_barcode=" + encodeURIComponent(decodedText);
+            console.error("DOM access failed:", err);
+            // Fallback for sandboxed cross-origin environments
+            navigator.clipboard.writeText(decodedText);
+            document.getElementById('scanner-status').innerText = "✓ Scanned: " + decodedText + " (Copied to clipboard)";
         }
     }
 
-    let scanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: { width: 300, height: 120 } }, false);
+    let scanner = new Html5QrcodeScanner("reader", { 
+        fps: 10, 
+        qrbox: { width: 280, height: 120 },
+        rememberLastUsedCamera: true
+    }, false);
     scanner.render(onScanSuccess);
     </script>
-    """, height=420)
+    """, height=380)
 
+# Alternative fallback: Snap photo using native Streamlit camera input
+with st.expander("📸 Can't open webcam scanner? Click here to snap a photo"):
+    cam_file = st.camera_input("Take photo of barcode")
+    if cam_file:
+        try:
+            import cv2
+            import numpy as np
+            bytes_data = cam_file.getvalue()
+            cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+
+            found_code = None
+            if hasattr(cv2, "barcode"):
+                det = cv2.barcode.BarcodeDetector()
+                res = det.detectAndDecode(cv2_img)
+                if isinstance(res, tuple) and res[0]:
+                    found_code = res[0]
+
+            if not found_code:
+                qr_det = cv2.QRCodeDetector()
+                res_qr, _, _ = qr_det.detectAndDecode(cv2_img)
+                if res_qr:
+                    found_code = res_qr
+
+            if found_code:
+                st.session_state.barcode_input = found_code
+                autofill_product(found_code)
+                st.rerun()
+            else:
+                st.warning("Barcode not detected in photo. Try holding it closer or steady.")
+        except Exception as e:
+            st.error(f"Image processing error: {e}")
+
+# Form Inputs
 product_name = st.text_input("Product Name *", key="product_name", placeholder="e.g. Vaseline 225ml")
 
 col1, col2 = st.columns(2)
@@ -217,7 +292,7 @@ if st.button("💾 Save to Stock", use_container_width=True):
     if not product_name or buying_price == 0 or selling_price == 0:
         st.error("Fill Product Name, Buying and Selling Price!")
     elif selling_price <= buying_price:
-        st.error(f"Selling price (₦{selling_price}) must be greater than buying price (₦{buying_price})")
+        st.error(f"Selling price (₦{selling_price}) must be > Buying price (₦{buying_price})")
     else:
         with get_db() as con:
             con.execute("""
@@ -229,7 +304,7 @@ if st.button("💾 Save to Stock", use_container_width=True):
             """, (
                 product_name, business_category, brand, stock_unit, quantity,
                 buying_price, selling_price, pieces_per_unit, piece_buy_price,
-                piece_sell_price, low_stock, size_variant, barcode,
+                piece_sell_price, low_stock, size_variant, st.session_state.barcode_input,
                 datetime.now().strftime("%Y-%m-%d %H:%M")
             ))
             con.commit()
