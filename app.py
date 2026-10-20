@@ -47,17 +47,23 @@ barcode = st.text_input("Barcode (optional)", placeholder="Scan or type", key="b
 if barcode != st.session_state.barcode:
     st.session_state.barcode = barcode
 
-# If barcode typed/scanned, auto-fill name if already in sme.db
-if st.session_state.barcode:
-    existing = check_barcode_exists(st.session_state.barcode)
-    if existing:
-        prod, cat, br, unit, buy, sell, size = existing
-        if not st.session_state.product_name:
-            st.session_state.product_name = prod
-        st.info(f"✅ Found in LOCAL sme.db: {prod} — auto-filling")
-        # Optional: auto set product_name input via rerun
-        if product_name != prod:
-            product_name = prod
+st.markdown("## 🟡 Add Stock - Buying & Selling Price")
+
+# --- 1. Barcode first ---
+barcode = st.text_input("Barcode (optional)", placeholder="Scan or type", key="barcode_widget")
+
+# --- 2. Check sme.db BEFORE creating product name box ---
+if barcode:
+    with get_db() as con:
+        row = con.execute("SELECT product_name FROM stock WHERE barcode=?", (barcode.strip(),)).fetchone()
+        if row:
+            if "product_name" not in st.session_state or not st.session_state.product_name:
+                st.session_state.product_name = row[0]
+
+# --- 3. Product name AFTER ---
+product_name = st.text_input("Product Name *", placeholder="e.g. Vaseline 225ml", key="product_name")
+
+if st.checkbox("📷 Open Live Scanner"):
 
 if st.checkbox("📷 Open Live Scanner"):
     components.html("""
